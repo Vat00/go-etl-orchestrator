@@ -1,4 +1,6 @@
 # Go ETL Orchestrator
+# Одна команда — и вся система поднята
+docker-compose up -d --build
 
 [![Go Version](https://img.shields.io/badge/go-1.21-blue.svg)](https://golang.org/)
 [![Docker](https://img.shields.io/badge/docker-25.0-blue.svg)](https://www.docker.com/)
