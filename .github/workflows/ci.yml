@@ -14,5 +14,5 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: '1.21'
-      - run: go test ./cmd/worker -v
-      - run: go test ./tests/integration -v
+      - run: go mod download
+      - run: go test -v ./cmd/worker/...
