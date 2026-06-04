@@ -37,7 +37,6 @@ func getEnv(key, defaultValue string) string {
 }
 
 func main() {
-	// Читаем переменные окружения
 	dbHost := getEnv("DB_HOST", "localhost")
 	dbPort := getEnv("DB_PORT", "5432")
 	dbUser := getEnv("DB_USER", "user")
@@ -45,7 +44,6 @@ func main() {
 	dbName := getEnv("DB_NAME", "orchestrator")
 	redisAddr := getEnv("REDIS_ADDR", "localhost:6379")
 
-	// Подключение к PostgreSQL
 	connStr := fmt.Sprintf("host=%s port=%s user=%s password=%s dbname=%s sslmode=disable",
 		dbHost, dbPort, dbUser, dbPassword, dbName)
 
@@ -61,7 +59,6 @@ func main() {
 	}
 	log.Println("Connected to PostgreSQL")
 
-	// Подключение к Redis
 	rdb = redis.NewClient(&redis.Options{
 		Addr: redisAddr,
 		DB:   0,
@@ -71,7 +68,6 @@ func main() {
 	}
 	log.Println("Connected to Redis")
 
-	// Создание таблицы
 	createTableSQL := `
     CREATE TABLE IF NOT EXISTS tasks (
         id UUID PRIMARY KEY,
@@ -79,7 +75,7 @@ func main() {
         status TEXT NOT NULL,
         type TEXT NOT NULL,
         config JSONB NOT NULL,
-		retries INT DEFAULT 0,
+        retries INT DEFAULT 0,
         created_at TIMESTAMP DEFAULT NOW(),
         updated_at TIMESTAMP DEFAULT NOW()
     );`
@@ -88,8 +84,8 @@ func main() {
 	}
 	log.Println("Table tasks ready")
 
-	// HTTP роутер
 	r := mux.NewRouter()
+	r.HandleFunc("/task", createTask).Methods("POST")
 	r.HandleFunc("/task/{id}", getTaskStatus).Methods("GET")
 	r.HandleFunc("/health", healthCheck).Methods("GET")
 
@@ -116,15 +112,13 @@ func createTask(w http.ResponseWriter, r *http.Request) {
 	}
 	task.Status = "pending"
 
-	// Сохраняем в PostgreSQL
-	query := `INSERT INTO tasks (id, name, status, type, config) VALUES ($1, $2, $3, $4, $5)`
-	_, err := db.Exec(query, task.ID, task.Name, task.Status, task.Type, task.Config)
+	query := `INSERT INTO tasks (id, name, status, type, config, retries) VALUES ($1, $2, $3, $4, $5, $6)`
+	_, err := db.Exec(query, task.ID, task.Name, task.Status, task.Type, task.Config, task.Retries)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	// Отправляем ID в Redis очередь
 	err = rdb.LPush(ctx, "task:queue", task.ID).Err()
 	if err != nil {
 		log.Printf("Failed to push task %s to Redis: %v", task.ID, err)
@@ -136,6 +130,7 @@ func createTask(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusCreated)
 	json.NewEncoder(w).Encode(task)
 }
+
 func getTaskStatus(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	taskID := vars["id"]
@@ -166,8 +161,8 @@ func getTaskStatus(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(response)
 }
+
 func healthCheck(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(map[string]string{"status": "healthy"})
 }
