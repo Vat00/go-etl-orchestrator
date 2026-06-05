@@ -12,7 +12,7 @@
 ---
 
 ## 🏗 Архитектура
-промт для генерации схемы:
+промт для генерации схемы Mermaid:
 graph LR
     Client[Клиент\ncurl/Postman] -->|HTTP POST/GET| Orchestrator[Оркестратор API\nPOST /task\nGET /task/{id}]
     
