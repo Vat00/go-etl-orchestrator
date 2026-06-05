@@ -1,11 +1,10 @@
 # Go ETL Orchestrator
-# Одна команда — и вся система поднята
-docker-compose up -d --build
 
 [![Go Version](https://img.shields.io/badge/go-1.21-blue.svg)](https://golang.org/)
 [![Docker](https://img.shields.io/badge/docker-25.0-blue.svg)](https://www.docker.com/)
 [![PostgreSQL](https://img.shields.io/badge/postgres-15-blue.svg)](https://www.postgresql.org/)
 [![Redis](https://img.shields.io/badge/redis-7-red.svg)](https://redis.io/)
+[![CI](https://github.com/Vat00/go-etl-orchestrator/actions/workflows/ci.yml/badge.svg)](https://github.com/Vat00/go-etl-orchestrator/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
 **Распределённый оркестратор задач для ETL-пайплайнов** с микросервисной архитектурой, асинхронной обработкой через Redis и автоматическими ретраями.
@@ -13,16 +12,14 @@ docker-compose up -d --build
 ---
 
 ## 🏗 Архитектура
-go-etl-orchestrator/
-├── cmd/
-│   ├── orchestrator/main.go   # API сервер
-│   └── worker/main.go          # Воркер
-├── Dockerfile.orchestrator
-├── Dockerfile.worker
-├── docker-compose.yml
-├── go.mod
-├── go.sum
-└── README.md
+
+![Architecture](./docs/architecture.png)  
+*(Если схема не отображается, можно посмотреть текстовое описание ниже)*
+
+- **Оркестратор (API)** — принимает задачи, сохраняет в PostgreSQL, отправляет ID в Redis.
+- **Redis** — очередь задач (`task:queue`).
+- **Воркер** — забирает задачи через `BLPop`, выполняет (shell/HTTP), обновляет статус, делает ретраи.
+- **PostgreSQL** — хранит задачи, статусы, количество ретраев.
 
 ## 🚀 Быстрый старт
 
@@ -33,17 +30,11 @@ go-etl-orchestrator/
 ### Запуск
 
 ```bash
-# Склонировать репозиторий
 git clone https://github.com/Vat00/go-etl-orchestrator.git
 cd go-etl-orchestrator
-
-# Запустить все сервисы
 docker-compose up -d --build
-
-# Проверить статус контейнеров
-docker ps
-# API
-# Создать задачу (Shell)
+После запуска API доступен на http://localhost:8080
+📡 API
 curl -X POST http://localhost:8080/task \
   -H "Content-Type: application/json" \
   -d '{
@@ -53,7 +44,7 @@ curl -X POST http://localhost:8080/task \
       "command": "echo Hello from orchestrator"
     }
   }'
-  # Ответ
+  Ответ:
   {
   "id": "550e8400-e29b-41d4-a716-446655440000",
   "name": "my shell task",
@@ -62,7 +53,7 @@ curl -X POST http://localhost:8080/task \
   "status": "pending",
   "retries": 0
 }
-# Cоздать задачу HTTP
+Создать задачу (HTTP)
 curl -X POST http://localhost:8080/task \
   -H "Content-Type: application/json" \
   -d '{
@@ -73,9 +64,9 @@ curl -X POST http://localhost:8080/task \
       "method": "GET"
     }
   }'
-  # Получить статус задачи
+  Получить статус задачи
   curl http://localhost:8080/task/{task-id}
-  # Ответ
+  Ответ:
   {
   "id": "550e8400-e29b-41d4-a716-446655440000",
   "name": "my shell task",
@@ -85,57 +76,55 @@ curl -X POST http://localhost:8080/task \
   "created_at": "2026-06-01T08:10:31Z",
   "updated_at": "2026-06-01T08:10:32Z"
 }
-# HTTP с телом запроса
-{
-  "type": "http",
-  "config": {
-    "url": "https://httpbin.org/post",
-    "method": "POST",
-    "headers": {"Content-Type": "application/json"},
-    "body": "{\"key\": \"value\"}"
-  }
-}
-# Механизм ретраев
-Task failed → Retry 1/3 → failed → Retry 2/3 → failed → Retry 3/3 → failed → marking as failed
-Структура Docker-контейнеров
+🔄 Механизм ретраев
+Task failed → Retry 1/3 → failed → Retry 2/3 → failed → Retry 3/3 → marking as failed
+Статус retries показывает количество уже выполненных попыток.
+🧪 Тестирование
+Юнит-тесты (воркер)
+Проверяют изолированно функции executeShell, executeHTTP.
+
+bash
+go test ./cmd/worker -v
+Интеграционные тесты
+Проверяют сквозной сценарий: создание задачи → выполнение воркером → обновление статуса. Требуют запущенной системы.
+
+bash
+docker-compose up -d
+go test -tags=integration ./tests/integration/...
+CI (GitHub Actions)
+При каждом пуше автоматически запускаются юнит-тесты. Статус сборки — https://github.com/Vat00/go-etl-orchestrator/actions/workflows/ci.yml/badge.svg
+🐳 Структура Docker-контейнеров
 Контейнер	Порт	Назначение
 orchestrator-api	8080	HTTP API сервер
 orchestrator-worker	—	Фоновый обработчик задач
 orchestrator-postgres	5433	PostgreSQL
 orchestrator-redis	6379	Redis очередь
-Масштабирование воркеров
+Масштабирование воркеров:
+
 bash
 docker-compose up -d --scale worker=3
 📁 Структура проекта
 text
 go-etl-orchestrator/
+├── .github/workflows/       # CI (GitHub Actions)
 ├── cmd/
 │   ├── orchestrator/main.go   # API сервер
-│   └── worker/main.go          # Воркер
+│   └── worker/
+│       ├── main.go            # воркер
+│       └── worker_test.go     # юнит-тесты
+├── tests/integration/
+│   └── orchestrator_test.go   # интеграционные тесты
 ├── Dockerfile.orchestrator
 ├── Dockerfile.worker
 ├── docker-compose.yml
 ├── go.mod
 ├── go.sum
 └── README.md
-🧪 Тестирование
-PowerShell
-powershell
-# Создать задачу
-$task = Invoke-RestMethod -Uri http://localhost:8080/task `
-  -Method POST `
-  -ContentType "application/json" `
-  -Body '{"name":"test","type":"shell","config":{"command":"echo OK"}}'
-
-# Проверить статус
-Invoke-RestMethod -Uri "http://localhost:8080/task/$($task.id)"
-PostgreSQL (прямой доступ)
-bash
-docker exec orchestrator-postgres psql -U user -d orchestrator -c "SELECT * FROM tasks ORDER BY created_at DESC LIMIT 5;"
-Redis очередь
-bash
-docker exec orchestrator-redis redis-cli LLEN task:queue
-📊 Мониторинг
+🛠 Поддерживаемые типы задач
+Тип	Описание	Пример конфигурации
+shell	Выполнение команд ОС	{"command": "echo hello"}
+http	HTTP-запросы (GET/POST)	{"url": "https://api.example.com", "method": "GET"}
+📊 Мониторинг и логи
 Логи воркера:
 
 bash
@@ -146,45 +135,32 @@ bash
 docker logs orchestrator-api -f
 🛑 Остановка и очистка
 bash
-# Остановить все контейнеры
-docker-compose down
-
-# Остановить и удалить volumes (очистить БД)
-docker-compose down -v
-🔧 Разработка и локальный запуск (без Docker)
+docker-compose down         # остановить контейнеры
+docker-compose down -v      # + удалить volumes (очистить БД)
+🔧 Разработка (без Docker)
 bash
-# Установить зависимости
 go mod download
-
-# Запустить PostgreSQL и Redis через Docker
-docker-compose up -d postgres redis
-
-# Запустить оркестратора
+docker-compose up -d postgres redis   # только БД
 go run cmd/orchestrator/main.go
-
-# Запустить воркера (в другом терминале)
 go run cmd/worker/main.go
 🎯 Возможные улучшения (Roadmap)
+Unit-тесты
+
+Интеграционные тесты
+
+CI (GitHub Actions)
+
 Метрики Prometheus + Grafana
 
 Web UI для просмотра задач
 
 DAG (зависимости между задачами)
 
-Webhook-уведомления о завершении
-
 Поддержка SQL-задач
 
-TLS/gRPC вместо HTTP
+TLS/gRPC
 
 📄 Лицензия
 MIT © Vat00
 
-🤝 Контакты
-По вопросам сотрудничества и предложениям — GitHub Issues или Pull Requests.
-
 Built with Go, Docker, PostgreSQL, Redis
-
-text
-
----
