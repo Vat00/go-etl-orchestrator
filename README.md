@@ -13,14 +13,7 @@
 
 ## 🏗 Архитектура
 
-```mermaid
-graph LR
-    client["Клиент<br/>(curl/Postman)"] -->|HTTP POST/GET| Orchestrator["Оркестратор API<br/>POST /task<br/>GET /task/{id}"]
-    Orchestrator -->|INSERT task| PostgreSQL[(PostgreSQL<br/>хранилище задач)]
-    Orchestrator -->|LPUSH taskID| Redis["Redis очередь<br/>task:queue"]
-    Redis -->|BLPop taskID| Worker["Воркер<br/>BLPop → execute<br/>shell/http → update status"]
-    Worker -->|UPDATE status & retries| PostgreSQL
-    Worker -->|HTTP запрос| External["Внешние сервисы<br/>(опционально)"]
+<img width="5897" height="839" alt="deepseek_mermaid_20260605_51bb45" src="https://github.com/user-attachments/assets/8499a1de-7064-44dd-af8d-4156786fea27" />ы
 > Текстовая схема архитектуры приведена ниже.
 
 - **Оркестратор (API)** — принимает задачи, сохраняет в PostgreSQL, отправляет ID в Redis.
