@@ -15,14 +15,12 @@
 
 ```mermaid
 graph LR
-    Client[Клиент\ncurl/Postman] -->|HTTP POST/GET| Orchestrator[Оркестратор API\nPOST /task\nGET /task/{id}]
-    
-    Orchestrator -->|INSERT task| PostgreSQL[(PostgreSQL\nхранилище задач)]
-    Orchestrator -->|LPUSH taskID| Redis[Redis очередь\ntask:queue]
-    
-    Redis -->|BLPop taskID| Worker[Воркер\nBLPop → execute\nshell/http → update status]
+    client["Клиент<br/>(curl/Postman)"] -->|HTTP POST/GET| Orchestrator["Оркестратор API<br/>POST /task<br/>GET /task/{id}"]
+    Orchestrator -->|INSERT task| PostgreSQL[(PostgreSQL<br/>хранилище задач)]
+    Orchestrator -->|LPUSH taskID| Redis["Redis очередь<br/>task:queue"]
+    Redis -->|BLPop taskID| Worker["Воркер<br/>BLPop → execute<br/>shell/http → update status"]
     Worker -->|UPDATE status & retries| PostgreSQL
-    Worker -.->|HTTP запрос| External[Внешние сервисы\n(опционально)]
+    Worker -->|HTTP запрос| External["Внешние сервисы<br/>(опционально)"]
 > Текстовая схема архитектуры приведена ниже.
 
 - **Оркестратор (API)** — принимает задачи, сохраняет в PostgreSQL, отправляет ID в Redis.
