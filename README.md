@@ -12,7 +12,16 @@
 ---
 
 ## 🏗 Архитектура
-
+промт для генерации схемы:
+graph LR
+    Client[Клиент\ncurl/Postman] -->|HTTP POST/GET| Orchestrator[Оркестратор API\nPOST /task\nGET /task/{id}]
+    
+    Orchestrator -->|INSERT task| PostgreSQL[(PostgreSQL\nхранилище задач)]
+    Orchestrator -->|LPUSH taskID| Redis[Redis очередь\ntask:queue]
+    
+    Redis -->|BLPop taskID| Worker[Воркер\nBLPop → execute\nshell/http → update status]
+    Worker -->|UPDATE status & retries| PostgreSQL
+    Worker -.->|HTTP запрос| External[Внешние сервисы\n(опционально)]
 > Текстовая схема архитектуры приведена ниже.
 
 - **Оркестратор (API)** — принимает задачи, сохраняет в PostgreSQL, отправляет ID в Redis.
