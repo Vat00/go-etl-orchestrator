@@ -120,7 +120,7 @@ go-etl-orchestrator/
 ├── go.mod
 ├── go.sum
 └── README.md
-🛠 Поддерживаемые типы задач
+ Поддерживаемые типы задач
 Тип	Описание	Пример конфигурации
 shell	Выполнение команд ОС	{"command": "echo hello"}
 http	HTTP-запросы (GET/POST)	{"url": "https://api.example.com", "method": "GET"}
@@ -137,7 +137,7 @@ docker logs orchestrator-api -f
 bash
 docker-compose down         # остановить контейнеры
 docker-compose down -v      # + удалить volumes (очистить БД)
-🔧 Разработка (без Docker)
+ Разработка (без Docker)
 bash
 go mod download
 docker-compose up -d postgres redis   # только БД
