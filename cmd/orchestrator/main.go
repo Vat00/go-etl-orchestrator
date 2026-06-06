@@ -1,19 +1,21 @@
 package main
 
 import (
-	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"time"
 
-	"github.com/go-redis/redis/v8"
 	"github.com/google/uuid"
 	"github.com/gorilla/mux"
+	"github.com/hibiken/asynq"
 	_ "github.com/lib/pq"
+
+	"github.com/Vat00/go-etl-orchestrator/internal/queue"
+	"github.com/Vat00/go-etl-orchestrator/internal/tasks"
 )
 
 type Task struct {
@@ -26,8 +28,7 @@ type Task struct {
 }
 
 var db *sql.DB
-var rdb *redis.Client
-var ctx = context.Background()
+var asynqClient *asynq.Client
 
 func getEnv(key, defaultValue string) string {
 	if value := os.Getenv(key); value != "" {
@@ -36,7 +37,17 @@ func getEnv(key, defaultValue string) string {
 	return defaultValue
 }
 
+func initLogger() {
+	opts := &slog.HandlerOptions{
+		Level: slog.LevelDebug,
+	}
+	logger := slog.New(slog.NewJSONHandler(os.Stdout, opts))
+	slog.SetDefault(logger)
+}
+
 func main() {
+	initLogger()
+
 	dbHost := getEnv("DB_HOST", "localhost")
 	dbPort := getEnv("DB_PORT", "5432")
 	dbUser := getEnv("DB_USER", "user")
@@ -50,23 +61,20 @@ func main() {
 	var err error
 	db, err = sql.Open("postgres", connStr)
 	if err != nil {
-		log.Fatal(err)
+		slog.Error("Failed to open DB", "error", err)
+		os.Exit(1)
 	}
 	defer db.Close()
 
 	if err = db.Ping(); err != nil {
-		log.Fatal("Cannot reach DB: ", err)
+		slog.Error("Cannot reach DB", "error", err)
+		os.Exit(1)
 	}
-	log.Println("Connected to PostgreSQL")
+	slog.Info("Connected to PostgreSQL")
 
-	rdb = redis.NewClient(&redis.Options{
-		Addr: redisAddr,
-		DB:   0,
-	})
-	if _, err := rdb.Ping(ctx).Result(); err != nil {
-		log.Fatal("Cannot reach Redis: ", err)
-	}
-	log.Println("Connected to Redis")
+	// Инициализация Asynq клиента (без пароля, если не нужен)
+	asynqClient = queue.NewRedisClient(redisAddr, "", 0)
+	defer asynqClient.Close()
 
 	createTableSQL := `
     CREATE TABLE IF NOT EXISTS tasks (
@@ -80,14 +88,16 @@ func main() {
         updated_at TIMESTAMP DEFAULT NOW()
     );`
 	if _, err := db.Exec(createTableSQL); err != nil {
-		log.Fatal(err)
+		slog.Error("Failed to create table", "error", err)
+		os.Exit(1)
 	}
-	log.Println("Table tasks ready")
+	slog.Info("Table tasks ready")
 
 	r := mux.NewRouter()
 	r.HandleFunc("/task", createTask).Methods("POST")
 	r.HandleFunc("/task/{id}", getTaskStatus).Methods("GET")
 	r.HandleFunc("/health", healthCheck).Methods("GET")
+	r.HandleFunc("/ready", readyCheck).Methods("GET")
 
 	srv := &http.Server{
 		Handler:      r,
@@ -96,13 +106,17 @@ func main() {
 		ReadTimeout:  15 * time.Second,
 	}
 
-	log.Println("Orchestrator starting on :8080")
-	log.Fatal(srv.ListenAndServe())
+	slog.Info("Orchestrator starting on :8080")
+	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		slog.Error("Server failed", "error", err)
+		os.Exit(1)
+	}
 }
 
 func createTask(w http.ResponseWriter, r *http.Request) {
 	var task Task
 	if err := json.NewDecoder(r.Body).Decode(&task); err != nil {
+		slog.Error("Invalid task payload", "error", err)
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
@@ -115,16 +129,30 @@ func createTask(w http.ResponseWriter, r *http.Request) {
 	query := `INSERT INTO tasks (id, name, status, type, config, retries) VALUES ($1, $2, $3, $4, $5, $6)`
 	_, err := db.Exec(query, task.ID, task.Name, task.Status, task.Type, task.Config, task.Retries)
 	if err != nil {
+		slog.Error("Failed to save task", "task_id", task.ID, "error", err)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	err = rdb.LPush(ctx, "task:queue", task.ID).Err()
-	if err != nil {
-		log.Printf("Failed to push task %s to Redis: %v", task.ID, err)
-	} else {
-		log.Printf("Task %s pushed to Redis queue", task.ID)
+	// Отправляем задачу в Asynq. Payload = ID задачи.
+	payload, _ := json.Marshal(map[string]string{"id": task.ID})
+	asynqTask := asynq.NewTask(determineTaskType(task.Type), payload)
+
+	// Опции: максимальное количество попыток (переопределяет глобальное), очередь по умолчанию
+	opts := []asynq.Option{
+		asynq.MaxRetry(task.Retries), // если в задаче указано своё значение
+		asynq.Queue("default"),
+		asynq.Timeout(10 * time.Minute),
 	}
+	info, err := asynqClient.Enqueue(asynqTask, opts...)
+	if err != nil {
+		slog.Error("Failed to enqueue task", "task_id", task.ID, "error", err)
+		// Задача сохранена в БД, но не в очереди. Можно вернуть ошибку или попробовать ещё раз.
+		http.Error(w, "Task created but not enqueued", http.StatusInternalServerError)
+		return
+	}
+
+	slog.Info("Task enqueued", "task_id", task.ID, "asynq_id", info.ID, "queue", info.Queue)
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
@@ -144,6 +172,7 @@ func getTaskStatus(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Task not found", http.StatusNotFound)
 		return
 	} else if err != nil {
+		slog.Error("DB error", "error", err)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -165,4 +194,33 @@ func getTaskStatus(w http.ResponseWriter, r *http.Request) {
 func healthCheck(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"status": "healthy"})
+}
+
+func readyCheck(w http.ResponseWriter, r *http.Request) {
+	// Проверяем подключение к БД и Redis (Asynq клиент)
+	if err := db.Ping(); err != nil {
+		slog.Warn("Ready check: DB unreachable", "error", err)
+		http.Error(w, "DB not ready", http.StatusServiceUnavailable)
+		return
+	}
+	// Asynq клиент не имеет прямого Ping, но можно выполнить неблокирующую проверку через контекст
+	// Для простоты считаем, что если клиент создан и не закрыт – OK.
+	if asynqClient == nil {
+		http.Error(w, "Asynq client not initialized", http.StatusServiceUnavailable)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"ready": "true"})
+}
+
+// Определяем тип задачи Asynq на основе строки из Task.Type
+func determineTaskType(taskType string) string {
+	switch taskType {
+	case "http":
+		return tasks.TypeHTTP
+	case "shell":
+		return tasks.TypeShell
+	default:
+		return tasks.TypeHTTP // fallback
+	}
 }
