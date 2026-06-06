@@ -11,7 +11,7 @@
 
 ---
 
-## 🏗 Архитектура
+##  Архитектура
 
 <img width="5897" height="839" alt="deepseek_mermaid_20260605_51bb45" src="https://github.com/user-attachments/assets/8499a1de-7064-44dd-af8d-4156786fea27" />
 > Текстовая схема архитектуры приведена ниже.
@@ -21,7 +21,7 @@
 - **Воркер** — забирает задачи через `BLPop`, выполняет (shell/HTTP), обновляет статус, делает ретраи.
 - **PostgreSQL** — хранит задачи, статусы, количество ретраев.
 
-## 🚀 Быстрый старт
+##  Быстрый старт
 
 ### Требования
 - Docker & Docker Compose
@@ -34,7 +34,7 @@ git clone https://github.com/Vat00/go-etl-orchestrator.git
 cd go-etl-orchestrator
 docker-compose up -d --build
 После запуска API доступен на http://localhost:8080
-📡 API
+ API
 curl -X POST http://localhost:8080/task \
   -H "Content-Type: application/json" \
   -d '{
@@ -76,10 +76,10 @@ curl -X POST http://localhost:8080/task \
   "created_at": "2026-06-01T08:10:31Z",
   "updated_at": "2026-06-01T08:10:32Z"
 }
-🔄 Механизм ретраев
+ Механизм ретраев
 Task failed → Retry 1/3 → failed → Retry 2/3 → failed → Retry 3/3 → marking as failed
 Статус retries показывает количество уже выполненных попыток.
-🧪 Тестирование
+ Тестирование
 Юнит-тесты (воркер)
 Проверяют изолированно функции executeShell, executeHTTP.
 
@@ -93,7 +93,7 @@ docker-compose up -d
 go test -tags=integration ./tests/integration/...
 CI (GitHub Actions)
 При каждом пуше автоматически запускаются юнит-тесты. Статус сборки — https://github.com/Vat00/go-etl-orchestrator/actions/workflows/ci.yml/badge.svg
-🐳 Структура Docker-контейнеров
+ Структура Docker-контейнеров
 Контейнер	Порт	Назначение
 orchestrator-api	8080	HTTP API сервер
 orchestrator-worker	—	Фоновый обработчик задач
@@ -103,7 +103,7 @@ orchestrator-redis	6379	Redis очередь
 
 bash
 docker-compose up -d --scale worker=3
-📁 Структура проекта
+ Структура проекта
 text
 go-etl-orchestrator/
 ├── .github/workflows/       # CI (GitHub Actions)
@@ -124,7 +124,7 @@ go-etl-orchestrator/
 Тип	Описание	Пример конфигурации
 shell	Выполнение команд ОС	{"command": "echo hello"}
 http	HTTP-запросы (GET/POST)	{"url": "https://api.example.com", "method": "GET"}
-📊 Мониторинг и логи
+ Мониторинг и логи
 Логи воркера:
 
 bash
@@ -133,7 +133,7 @@ docker logs go-etl-orchestrator-worker-1 -f
 
 bash
 docker logs orchestrator-api -f
-🛑 Остановка и очистка
+ Остановка и очистка
 bash
 docker-compose down         # остановить контейнеры
 docker-compose down -v      # + удалить volumes (очистить БД)
@@ -143,7 +143,7 @@ go mod download
 docker-compose up -d postgres redis   # только БД
 go run cmd/orchestrator/main.go
 go run cmd/worker/main.go
-🎯 Возможные улучшения (Roadmap)
+ Возможные улучшения (Roadmap)
 Unit-тесты
 
 Интеграционные тесты
@@ -160,7 +160,7 @@ DAG (зависимости между задачами)
 
 TLS/gRPC
 
-📄 Лицензия
+ Лицензия
 MIT © Vat00
 
 Built with Go, Docker, PostgreSQL, Redis
