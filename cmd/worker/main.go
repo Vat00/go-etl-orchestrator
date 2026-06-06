@@ -7,15 +7,20 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/exec"
-	"runtime"
+	"os/signal"
+	"syscall"
 	"time"
 
-	"github.com/go-redis/redis/v8"
+	"github.com/hibiken/asynq"
 	_ "github.com/lib/pq"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
+
+	"github.com/Vat00/go-etl-orchestrator/internal/queue"
+	"github.com/Vat00/go-etl-orchestrator/internal/tasks"
 )
 
 type Task struct {
@@ -27,20 +32,7 @@ type Task struct {
 	Retries int             `json:"retries"`
 }
 
-type ShellConfig struct {
-	Command string `json:"command"`
-}
-
-type HTTPConfig struct {
-	URL     string            `json:"url"`
-	Method  string            `json:"method"`
-	Headers map[string]string `json:"headers"`
-	Body    string            `json:"body"`
-}
-
 var db *sql.DB
-var rdb *redis.Client
-var ctx = context.Background()
 
 func getEnv(key, defaultValue string) string {
 	if value := os.Getenv(key); value != "" {
@@ -49,8 +41,17 @@ func getEnv(key, defaultValue string) string {
 	return defaultValue
 }
 
+func initLogger() {
+	opts := &slog.HandlerOptions{
+		Level: slog.LevelDebug,
+	}
+	logger := slog.New(slog.NewJSONHandler(os.Stdout, opts))
+	slog.SetDefault(logger)
+}
+
 func main() {
-	// Читаем переменные окружения
+	initLogger()
+
 	dbHost := getEnv("DB_HOST", "localhost")
 	dbPort := getEnv("DB_PORT", "5432")
 	dbUser := getEnv("DB_USER", "user")
@@ -58,179 +59,188 @@ func main() {
 	dbName := getEnv("DB_NAME", "orchestrator")
 	redisAddr := getEnv("REDIS_ADDR", "localhost:6379")
 
-	// Подключение к PostgreSQL
 	connStr := fmt.Sprintf("host=%s port=%s user=%s password=%s dbname=%s sslmode=disable",
 		dbHost, dbPort, dbUser, dbPassword, dbName)
 
 	var err error
 	db, err = sql.Open("postgres", connStr)
 	if err != nil {
-		log.Fatal(err)
+		slog.Error("DB open error", "error", err)
+		os.Exit(1)
 	}
 	defer db.Close()
-
 	if err = db.Ping(); err != nil {
-		log.Fatal("Cannot reach DB: ", err)
+		slog.Error("DB ping error", "error", err)
+		os.Exit(1)
 	}
-	log.Println("Worker connected to PostgreSQL")
+	slog.Info("Worker connected to PostgreSQL")
 
-	// Подключение к Redis
-	rdb = redis.NewClient(&redis.Options{
-		Addr: redisAddr,
-		DB:   0,
-	})
-	if _, err := rdb.Ping(ctx).Result(); err != nil {
-		log.Fatal("Cannot reach Redis: ", err)
-	}
-	log.Println("Worker connected to Redis")
+	// Создаём сервер Asynq
+	srv := queue.NewRedisServer(redisAddr, "", 0)
 
-	// Бесконечный цикл обработки задач
-	for {
-		// Блокируемся, пока не появится задача в очереди "task:queue"
-		result, err := rdb.BLPop(ctx, 0*time.Second, "task:queue").Result()
-		if err != nil {
-			log.Printf("BLPop error: %v", err)
-			time.Sleep(1 * time.Second)
-			continue
+	// Запуск HTTP-сервера для метрик Prometheus
+	go func() {
+		http.Handle("/metrics", promhttp.Handler())
+		slog.Info("Metrics server listening", "addr", ":2112")
+		if err := http.ListenAndServe(":2112", nil); err != nil {
+			slog.Error("Metrics server failed", "error", err)
 		}
+	}()
 
-		if len(result) < 2 {
-			continue
+	// Маршрутизатор задач
+	mux := asynq.NewServeMux()
+	mux.HandleFunc(tasks.TypeHTTP, handleHTTPTask)
+	mux.HandleFunc(tasks.TypeShell, handleShellTask)
+
+	// Запускаем сервер в горутине, чтобы поймать сигналы
+	go func() {
+		if err := srv.Run(mux); err != nil {
+			slog.Error("Asynq server error", "error", err)
+			os.Exit(1)
 		}
-		taskID := result[1]
-		log.Printf("Worker picked task %s", taskID)
+	}()
 
-		// Загружаем задачу из БД
-		task, err := loadTask(taskID)
-		if err != nil {
-			log.Printf("Failed to load task %s: %v", taskID, err)
-			continue
-		}
-
-		// Обновляем статус на "running"
-		updateTaskStatus(taskID, "running")
-
-		// Выполняем задачу в зависимости от типа
-		var execErr error
-		switch task.Type {
-		case "shell":
-			execErr = executeShell(task.Config)
-		case "http":
-			execErr = executeHTTP(task.Config)
-		default:
-			log.Printf("Unknown task type: %s", task.Type)
-			execErr = fmt.Errorf("unknown task type: %s", task.Type)
-		}
-
-		// Обработка результата с ретраями
-		if execErr != nil {
-			log.Printf("Task %s failed: %v", taskID, execErr)
-
-			// Увеличиваем счетчик ретраев
-			newRetries := task.Retries + 1
-			if newRetries <= 3 {
-				log.Printf("Retry %d/3 for task %s", newRetries, taskID)
-				// Обновляем retries в БД
-				updateTaskRetries(taskID, newRetries)
-				// Возвращаем задачу в очередь
-				if err := rdb.LPush(ctx, "task:queue", taskID).Err(); err != nil {
-					log.Printf("Failed to push task %s back to queue: %v", taskID, err)
-				}
-				// Обновляем статус на pending (ждет повторной попытки)
-				updateTaskStatus(taskID, "pending")
-			} else {
-				log.Printf("Task %s exceeded max retries (3), marking as failed", taskID)
-				updateTaskStatus(taskID, "failed")
-			}
-		} else {
-			log.Printf("Task %s completed successfully", taskID)
-			updateTaskStatus(taskID, "success")
-		}
-	}
+	// Graceful shutdown по SIGTERM/SIGINT
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+	<-quit
+	slog.Info("Shutting down worker...")
+	srv.Shutdown()
+	slog.Info("Worker stopped")
 }
 
-func loadTask(id string) (*Task, error) {
-	row := db.QueryRow(`SELECT id, name, type, config, status, retries FROM tasks WHERE id=$1`, id)
+// handleHTTPTask обрабатывает HTTP задачу
+func handleHTTPTask(ctx context.Context, t *asynq.Task) error {
+	var payload struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(t.Payload(), &payload); err != nil {
+		slog.Error("Failed to unmarshal payload", "error", err)
+		return fmt.Errorf("invalid payload: %w", err)
+	}
+	taskID := payload.ID
+	slog.Info("Processing HTTP task", "task_id", taskID)
+
 	var task Task
-	err := row.Scan(&task.ID, &task.Name, &task.Type, &task.Config, &task.Status, &task.Retries)
+	query := `SELECT id, name, type, config, status, retries FROM tasks WHERE id=$1`
+	err := db.QueryRowContext(ctx, query, taskID).Scan(&task.ID, &task.Name, &task.Type, &task.Config, &task.Status, &task.Retries)
+	if err == sql.ErrNoRows {
+		slog.Error("Task not found in DB", "task_id", taskID)
+		return fmt.Errorf("task %s not found", taskID)
+	}
 	if err != nil {
-		return nil, err
-	}
-	return &task, nil
-}
-
-func updateTaskStatus(id, status string) {
-	_, err := db.Exec(`UPDATE tasks SET status=$1, updated_at=NOW() WHERE id=$2`, status, id)
-	if err != nil {
-		log.Printf("Failed to update status for task %s: %v", id, err)
-	}
-}
-
-func updateTaskRetries(id string, retries int) {
-	_, err := db.Exec(`UPDATE tasks SET retries=$1, updated_at=NOW() WHERE id=$2`, retries, id)
-	if err != nil {
-		log.Printf("Failed to update retries for task %s: %v", id, err)
-	}
-}
-
-func executeShell(configRaw json.RawMessage) error {
-	var config ShellConfig
-	if err := json.Unmarshal(configRaw, &config); err != nil {
-		return err
+		slog.Error("DB error", "task_id", taskID, "error", err)
+		return fmt.Errorf("DB error: %w", err)
 	}
 
-	var cmd *exec.Cmd
-	if runtime.GOOS == "windows" {
-		cmd = exec.Command("cmd", "/C", config.Command)
-	} else {
-		cmd = exec.Command("sh", "-c", config.Command)
+	var httpConfig struct {
+		URL     string            `json:"url"`
+		Method  string            `json:"method"`
+		Headers map[string]string `json:"headers"`
+		Body    string            `json:"body"`
+	}
+	if err := json.Unmarshal(task.Config, &httpConfig); err != nil {
+		slog.Error("Invalid HTTP config", "task_id", taskID, "config", string(task.Config), "error", err)
+		updateTaskStatus(taskID, "failed")
+		return fmt.Errorf("invalid http config: %w", err)
 	}
 
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		log.Printf("Command error: %v, output: %s", err, output)
-		return err
-	}
-	log.Printf("Command output: %s", output)
-	return nil
-}
-
-func executeHTTP(configRaw json.RawMessage) error {
-	var config HTTPConfig
-	if err := json.Unmarshal(configRaw, &config); err != nil {
-		return err
-	}
-
-	if config.Method == "" {
-		config.Method = "GET"
-	}
-
-	var bodyReader io.Reader
-	if config.Body != "" {
-		bodyReader = bytes.NewBufferString(config.Body)
-	}
-
-	req, err := http.NewRequest(config.Method, config.URL, bodyReader)
-	if err != nil {
-		return err
-	}
-
-	for k, v := range config.Headers {
-		req.Header.Set(k, v)
+	if httpConfig.Method == "" {
+		httpConfig.Method = "GET"
 	}
 
 	client := &http.Client{Timeout: 30 * time.Second}
+	var bodyReader io.Reader
+	if httpConfig.Body != "" {
+		bodyReader = bytes.NewBufferString(httpConfig.Body)
+	}
+	req, err := http.NewRequestWithContext(ctx, httpConfig.Method, httpConfig.URL, bodyReader)
+	if err != nil {
+		slog.Error("Failed to create request", "task_id", taskID, "error", err)
+		updateTaskStatus(taskID, "failed")
+		return err
+	}
+	for k, v := range httpConfig.Headers {
+		req.Header.Set(k, v)
+	}
+
 	resp, err := client.Do(req)
 	if err != nil {
+		slog.Error("HTTP request failed", "task_id", taskID, "url", httpConfig.URL, "error", err)
+		updateTaskStatus(taskID, "failed")
 		return err
 	}
 	defer resp.Body.Close()
 
 	body, _ := io.ReadAll(resp.Body)
-	log.Printf("HTTP response: status=%d, body=%s", resp.StatusCode, string(body))
+	slog.Info("HTTP response", "task_id", taskID, "status", resp.StatusCode, "body", string(body))
 
-	if resp.StatusCode >= 400 {
-		return fmt.Errorf("HTTP error: %d", resp.StatusCode)
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		updateTaskStatus(taskID, "success")
+		slog.Info("HTTP task succeeded", "task_id", taskID, "status_code", resp.StatusCode)
+		return nil
 	}
+
+	updateTaskStatus(taskID, "failed")
+	err = fmt.Errorf("unexpected status code: %d", resp.StatusCode)
+	slog.Error("HTTP task failed", "task_id", taskID, "status_code", resp.StatusCode)
+	return err
+}
+
+// handleShellTask обрабатывает shell задачу
+func handleShellTask(ctx context.Context, t *asynq.Task) error {
+	var payload struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(t.Payload(), &payload); err != nil {
+		return err
+	}
+	taskID := payload.ID
+	slog.Info("Processing shell task", "task_id", taskID)
+
+	var task Task
+	query := `SELECT id, name, type, config, status, retries FROM tasks WHERE id=$1`
+	err := db.QueryRowContext(ctx, query, taskID).Scan(&task.ID, &task.Name, &task.Type, &task.Config, &task.Status, &task.Retries)
+	if err == sql.ErrNoRows {
+		return fmt.Errorf("task %s not found", taskID)
+	}
+	if err != nil {
+		return err
+	}
+
+	var shellConfig struct {
+		Command string   `json:"command"`
+		Args    []string `json:"args"`
+		Env     []string `json:"env"`
+		Dir     string   `json:"dir"`
+	}
+	if err := json.Unmarshal(task.Config, &shellConfig); err != nil {
+		updateTaskStatus(taskID, "failed")
+		return err
+	}
+
+	cmd := exec.CommandContext(ctx, shellConfig.Command, shellConfig.Args...)
+	if shellConfig.Dir != "" {
+		cmd.Dir = shellConfig.Dir
+	}
+	if len(shellConfig.Env) > 0 {
+		cmd.Env = append(os.Environ(), shellConfig.Env...)
+	}
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		updateTaskStatus(taskID, "failed")
+		slog.Error("Shell task failed", "task_id", taskID, "output", string(output), "error", err)
+		return err
+	}
+	updateTaskStatus(taskID, "completed")
+	slog.Info("Shell task succeeded", "task_id", taskID, "output", string(output))
 	return nil
+}
+
+// updateTaskStatus обновляет статус задачи в БД
+func updateTaskStatus(taskID, status string) {
+	_, err := db.Exec(`UPDATE tasks SET status=$1, updated_at=NOW() WHERE id=$2`, status, taskID)
+	if err != nil {
+		slog.Error("Failed to update task status", "task_id", taskID, "status", status, "error", err)
+	}
 }

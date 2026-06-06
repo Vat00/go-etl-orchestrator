@@ -1,17 +1,24 @@
+version: '3.8'
+
 services:
   postgres:
     image: postgres:15
     container_name: orchestrator-postgres
     environment:
-      POSTGRES_DB: orchestrator
       POSTGRES_USER: user
       POSTGRES_PASSWORD: password
+      POSTGRES_DB: orchestrator
     ports:
-      - "5433:5432"
+      - "5433:5432"   # хост:контейнер, чтобы не конфликтовать с локальным Postgres
     volumes:
       - postgres_data:/var/lib/postgresql/data
     networks:
       - orchestrator-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U user -d orchestrator"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
 
   redis:
     image: redis:7-alpine
@@ -20,6 +27,11 @@ services:
       - "6379:6379"
     networks:
       - orchestrator-net
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
 
   orchestrator:
     build:
@@ -36,8 +48,10 @@ services:
       DB_NAME: orchestrator
       REDIS_ADDR: redis:6379
     depends_on:
-      - postgres
-      - redis
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
     networks:
       - orchestrator-net
     restart: unless-stopped
@@ -46,6 +60,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.worker
+    container_name: worker-1
     environment:
       DB_HOST: postgres
       DB_PORT: 5432
@@ -54,12 +69,16 @@ services:
       DB_NAME: orchestrator
       REDIS_ADDR: redis:6379
     depends_on:
-      - postgres
-      - redis
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
     networks:
       - orchestrator-net
     restart: unless-stopped
-    # Можно запустить несколько экземпляров через docker-compose up --scale worker=3
+    # Пробрасываем порт для метрик Prometheus (опционально)
+    ports:
+      - "2112:2112"
 
 networks:
   orchestrator-net:
