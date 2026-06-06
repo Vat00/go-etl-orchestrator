@@ -12,7 +12,7 @@ docker-compose up -d --build
 
 ---
 
-## 🏗 Архитектура
+##  Архитектура
 go-etl-orchestrator/
 ├── cmd/
 │   ├── orchestrator/main.go   # API сервер
@@ -24,7 +24,7 @@ go-etl-orchestrator/
 ├── go.sum
 └── README.md
 
-## 🚀 Быстрый старт
+## Быстрый старт
 
 ### Требования
 - Docker & Docker Compose
@@ -106,7 +106,7 @@ orchestrator-redis	6379	Redis очередь
 Масштабирование воркеров
 bash
 docker-compose up -d --scale worker=3
-📁 Структура проекта
+ Структура проекта
 text
 go-etl-orchestrator/
 ├── cmd/
@@ -118,7 +118,7 @@ go-etl-orchestrator/
 ├── go.mod
 ├── go.sum
 └── README.md
-🧪 Тестирование
+ Тестирование
 PowerShell
 powershell
 # Создать задачу
@@ -135,7 +135,7 @@ docker exec orchestrator-postgres psql -U user -d orchestrator -c "SELECT * FROM
 Redis очередь
 bash
 docker exec orchestrator-redis redis-cli LLEN task:queue
-📊 Мониторинг
+ Мониторинг
 Логи воркера:
 
 bash
@@ -144,14 +144,14 @@ docker logs go-etl-orchestrator-worker-1 -f
 
 bash
 docker logs orchestrator-api -f
-🛑 Остановка и очистка
+ Остановка и очистка
 bash
 # Остановить все контейнеры
 docker-compose down
 
 # Остановить и удалить volumes (очистить БД)
 docker-compose down -v
-🔧 Разработка и локальный запуск (без Docker)
+ Разработка и локальный запуск (без Docker)
 bash
 # Установить зависимости
 go mod download
@@ -164,7 +164,7 @@ go run cmd/orchestrator/main.go
 
 # Запустить воркера (в другом терминале)
 go run cmd/worker/main.go
-🎯 Возможные улучшения (Roadmap)
+ Возможные улучшения (Roadmap)
 Метрики Prometheus + Grafana
 
 Web UI для просмотра задач
@@ -174,13 +174,28 @@ DAG (зависимости между задачами)
 Webhook-уведомления о завершении
 
 Поддержка SQL-задач
+## Production-ready улучшения
+
+- **Graceful shutdown** – оркестратор и воркер корректно завершают работу по SIGTERM, не теряя задачи.
+- **Гибкая настройка**:
+  - `WORKER_CONCURRENCY` – количество параллельно выполняемых задач в одном воркере (по умолчанию 10).
+  - `DEFAULT_RETRIES` – количество повторных попыток для задач, если не указано в запросе (по умолчанию 5).
+- **Метрики Prometheus** – доступны на `http://localhost:2112/metrics`.
+- **Health checks** – `/health` и `/ready` для Kubernetes.
+
+### Переменные окружения (опциональны)
+
+| Переменная | Назначение | По умолчанию |
+|------------|------------|---------------|
+| `WORKER_CONCURRENCY` | Параллельных задач на воркер | 10 |
+| `DEFAULT_RETRIES` | Количество ретраев для задачи (если не указано в API) | 5 |
 
 TLS/gRPC вместо HTTP
 
-📄 Лицензия
+ Лицензия
 MIT © Vat00
 
-🤝 Контакты
+ Контакты
 По вопросам сотрудничества и предложениям — GitHub Issues или Pull Requests.
 
 Built with Go, Docker, PostgreSQL, Redis

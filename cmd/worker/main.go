@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -52,17 +53,26 @@ func initLogger() {
 func main() {
 	initLogger()
 
+	// Читаем переменные окружения
 	dbHost := getEnv("DB_HOST", "localhost")
 	dbPort := getEnv("DB_PORT", "5432")
 	dbUser := getEnv("DB_USER", "user")
 	dbPassword := getEnv("DB_PASSWORD", "password")
 	dbName := getEnv("DB_NAME", "orchestrator")
 	redisAddr := getEnv("REDIS_ADDR", "localhost:6379")
+	concurrencyStr := getEnv("WORKER_CONCURRENCY", "10")
 
+	// Парсим concurrency
+	concurrency, err := strconv.Atoi(concurrencyStr)
+	if err != nil {
+		slog.Warn("Invalid WORKER_CONCURRENCY, using default 10", "error", err)
+		concurrency = 10
+	}
+
+	// Подключение к PostgreSQL
 	connStr := fmt.Sprintf("host=%s port=%s user=%s password=%s dbname=%s sslmode=disable",
 		dbHost, dbPort, dbUser, dbPassword, dbName)
 
-	var err error
 	db, err = sql.Open("postgres", connStr)
 	if err != nil {
 		slog.Error("DB open error", "error", err)
@@ -76,7 +86,7 @@ func main() {
 	slog.Info("Worker connected to PostgreSQL")
 
 	// Создаём сервер Asynq
-	srv := queue.NewRedisServer(redisAddr, "", 0)
+	srv := queue.NewRedisServer(redisAddr, "", 0, concurrency)
 
 	// Запуск HTTP-сервера для метрик Prometheus
 	go func() {
@@ -92,7 +102,7 @@ func main() {
 	mux.HandleFunc(tasks.TypeHTTP, handleHTTPTask)
 	mux.HandleFunc(tasks.TypeShell, handleShellTask)
 
-	// Запускаем сервер в горутине, чтобы поймать сигналы
+	// Запускаем сервер Asynq в горутине
 	go func() {
 		if err := srv.Run(mux); err != nil {
 			slog.Error("Asynq server error", "error", err)
@@ -100,7 +110,7 @@ func main() {
 		}
 	}()
 
-	// Graceful shutdown по SIGTERM/SIGINT
+	// Graceful shutdown
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit

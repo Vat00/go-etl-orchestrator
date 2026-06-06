@@ -1,12 +1,16 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
+	"os/signal"
+	"strconv"
+	"syscall"
 	"time"
 
 	"github.com/google/uuid"
@@ -106,11 +110,25 @@ func main() {
 		ReadTimeout:  15 * time.Second,
 	}
 
-	slog.Info("Orchestrator starting on :8080")
-	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-		slog.Error("Server failed", "error", err)
-		os.Exit(1)
+	go func() {
+		slog.Info("Orchestrator starting on :8080")
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			slog.Error("Server error", "error", err)
+			os.Exit(1)
+		}
+	}()
+
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+	<-quit
+	slog.Info("Shutting down orchestrator...")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := srv.Shutdown(ctx); err != nil {
+		slog.Error("Forced shutdown", "error", err)
 	}
+	slog.Info("Orchestrator stopped")
 }
 
 func createTask(w http.ResponseWriter, r *http.Request) {
@@ -123,6 +141,14 @@ func createTask(w http.ResponseWriter, r *http.Request) {
 
 	if task.ID == "" {
 		task.ID = uuid.New().String()
+	}
+	if task.Retries == 0 {
+		defaultRetries := getEnv("DEFAULT_RETRIES", "5")
+		if n, err := strconv.Atoi(defaultRetries); err == nil {
+			task.Retries = n
+		} else {
+			task.Retries = 5
+		}
 	}
 	task.Status = "pending"
 
