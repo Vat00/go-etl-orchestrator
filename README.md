@@ -13,8 +13,8 @@ docker-compose up -d --build
 ---
 
 ##  Архитектура
-'''go-etl-orchestrator/ ── cmd/ ──┬── orchestrator/ ── main.go (API сервер)  │  Dockerfile.orchestrator  │  Dockerfile.worker  │  docker-compose.yml  │  go.mod  │  go.sum  │  README.md
-                               └── worker/ ─────── main.go (Воркер)'''
+go-etl-orchestrator/ ── cmd/ ──┬── orchestrator/ ── main.go (API сервер)  │  Dockerfile.orchestrator  │  Dockerfile.worker  │  docker-compose.yml  │  go.mod  │  go.sum  │  README.md
+                               └── worker/ ─────── main.go (Воркер)
 
 ## Быстрый старт
 
